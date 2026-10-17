@@ -1,4 +1,4 @@
-import asyncio, hashlib, ipaddress, os, re, socket, threading, time
+import asyncio, hashlib, json, html as html_lib, ipaddress, os, re, socket, threading, time
 from urllib.parse import urljoin, urlparse
 import requests, edge_tts
 from bs4 import BeautifulSoup
@@ -24,12 +24,35 @@ def safe_url(u):
         if ip.is_private or ip.is_loopback or ip.is_link_local:
             abort(400, "Link not allowed")
 
+def json_text(soup):
+    best = ""
+    def walk(o):
+        nonlocal best
+        if isinstance(o, str):
+            t = html_lib.unescape(re.sub(r"<br\s*/?>|</p>", "\n", o)); t = re.sub(r"<[^>]+>", "", t)
+            if len(t) > max(len(best), 500) and not t.startswith("http"): best = t
+        elif isinstance(o, dict):
+            for v in o.values(): walk(v)
+        elif isinstance(o, list):
+            for v in o: walk(v)
+    for sc in soup.find_all("script"):
+        t = (sc.string or "").strip()
+        if t[:1] in "{[":
+            try: walk(json.loads(t))
+            except Exception: pass
+    return best
+
 def parse(url):
     safe_url(url)
     r = requests.get(url, headers=UA, timeout=20)
     if not r.encoding or r.encoding.lower() == "iso-8859-1":
         r.encoding = r.apparent_encoding
+    dbg = f"site answered {r.status_code}, page size {len(r.text)} characters"
+    low = r.text.lower()
+    if r.status_code >= 400 or "just a moment" in low or "verify you are human" in low:
+        dbg += ", looks like it is blocking robots"
     soup = BeautifulSoup(r.text, "html.parser")
+    jt = json_text(soup)
     title = (soup.find("h1") or soup.find("title"))
     title = title.get_text(" ", strip=True) if title else url
     nxt = None
@@ -47,9 +70,9 @@ def parse(url):
             nxt = url.replace(path, path[:m.start()] + str(int(m.group()) + 1) + path[m.end():])
     for t in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript"]):
         t.decompose()
-    best, best_score = None, 0
+    best = None
     cands = []
-    for el in soup.find_all(["div", "article", "section", "td", "main"]):
+    for el in soup.find_all(["div", "article", "section", "td", "main", "p"]):
         txt = len(el.get_text(strip=True)); link = len("".join(x.get_text(strip=True) for x in el.find_all("a")))
         cands.append((el, txt, txt - 3 * link))
     if cands:
@@ -58,9 +81,12 @@ def parse(url):
         best = min(good, key=lambda c: c[1])[0]
     for br in best.find_all("br") if best else []:
         br.replace_with("\n")
-    text = best.get_text("\n", strip=True) if best else soup.get_text("\n", strip=True)
+    text = best.get_text("\n", strip=True) if best else ""
     text = re.sub(r"\n{2,}", "\n", text)
-    return title, text, nxt
+    if len(text) < 200 and len(jt) >= 200:
+        text = jt
+    dbg += f", readable text found: {len(text)} characters"
+    return title, text, nxt, dbg
 
 def split(text, n=2500):
     parts, buf = [], ""
@@ -107,11 +133,11 @@ def chapter():
     if jid in JOBS:
         return jsonify(JOBS[jid]["info"])
     try:
-        title, text, nxt = parse(url)
-    except requests.RequestException:
-        abort(502, "Could not open that link")
+        title, text, nxt, dbg = parse(url)
+    except requests.RequestException as e:
+        return jsonify(error="Could not open that link (" + type(e).__name__ + ")"), 502
     if len(text) < 200:
-        abort(422, "Could not find chapter text on that page")
+        return jsonify(error="No chapter text found (" + dbg + ")"), 422
     info = {"id": jid, "title": title, "next": nxt}
     JOBS[jid] = {"status": "working", "info": info}
     threading.Thread(target=make_audio, args=(jid, title, text, voice, rate), daemon=True).start()
