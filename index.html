@@ -1,0 +1,45 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141322"><title>NovelFlow Listen</title>
+<style>
+body{margin:0;background:#141322;color:#f6f1ff;font:16px -apple-system,BlinkMacSystemFont,sans-serif}
+main{max-width:560px;margin:auto;padding:max(24px,env(safe-area-inset-top)) 18px 60px}
+h1{font-size:28px;margin:0 0 4px}.muted{color:#bcb6d1;font-size:14px;line-height:1.5}
+.panel{background:#232137;border:1px solid #38334e;border-radius:18px;padding:16px;margin:14px 0}
+input,select{box-sizing:border-box;width:100%;background:#171627;color:#fff;border:1px solid #554b71;border-radius:12px;padding:13px;font:inherit;margin:6px 0}
+button{border:0;border-radius:13px;background:#a38cf4;color:#171129;font-weight:700;padding:14px 16px;font-size:16px}
+button.sec{background:#39334f;color:#fff}.row{display:flex;gap:8px}.row>*{flex:1}
+#now{font-size:18px;margin:6px 0}#status{color:#d2c3ff;font-size:14px}audio{width:100%;margin-top:10px}
+</style></head><body><main>
+<h1>📖 NovelFlow Listen</h1><p class="muted">Paste a chapter link, press Play, lock your phone. It keeps going to the next chapter.</p>
+<div class="panel">
+<input id="url" type="url" placeholder="Paste chapter link here" inputmode="url">
+<div class="row"><select id="voice">
+<option value="en-US-AriaNeural">English – woman</option><option value="en-US-GuyNeural">English – man</option>
+<option value="zh-CN-XiaoxiaoNeural">中文 – woman</option><option value="zh-CN-YunxiNeural">中文 – man</option>
+<option value="ms-MY-YasminNeural">Bahasa Malaysia</option></select>
+<select id="rate"><option value="+0%">Speed 1×</option><option value="+15%">Speed 1.15×</option><option value="+30%">Speed 1.3×</option><option value="+50%">Speed 1.5×</option></select></div>
+<input id="code" type="password" placeholder="Access code (if you set one)">
+<div class="row"><button id="go">▶ Play</button><button id="skip" class="sec">Next chapter ⏭</button></div></div>
+<div class="panel"><div class="muted">Now playing</div><div id="now">–</div><div id="status">Waiting for a link.</div><audio id="a" controls playsinline></audio></div>
+</main><script>
+const $=i=>document.getElementById(i),a=$('a');let cur=null,nxt=null,gen=0;
+for(const k of ['url','voice','rate','code']){const v=localStorage.getItem('nf-'+k);if(v)$(k).value=v;$(k).onchange=()=>localStorage.setItem('nf-'+k,$(k).value)}
+const SILENT='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+const st=t=>$('status').textContent=t;
+async function info(url){const p=new URLSearchParams({url,voice:$('voice').value,rate:$('rate').value,code:$('code').value});
+ const r=await fetch('/api/chapter?'+p);if(!r.ok){throw new Error(r.status==401?'Wrong access code':(r.status==422?'No chapter text found on that page':'Could not open that link'))}return r.json()}
+function play(i){cur=i;nxt=null;a.src='/audio/'+i.id+'.mp3?code='+encodeURIComponent($('code').value);a.play().catch(()=>st('Tap ▶ on the player to start'));
+ $('now').textContent=i.title;$('url').value=i.url||$('url').value;st('Preparing audio… first chapter takes a little while');
+ if('mediaSession' in navigator)navigator.mediaSession.metadata=new MediaMetadata({title:i.title,artist:'NovelFlow'});
+ prefetch(i)}
+async function prefetch(i){if(!i.next)return;try{const n=await info(i.next);n.url=i.next;if(cur===i)nxt=n}catch(e){}}
+function advance(){if(nxt)play(nxt);else if(cur&&cur.next)start(cur.next);else st('Finished – no next chapter found.')}
+async function start(url){const g=++gen;st('Loading…');try{const i=await info(url);i.url=url;if(g===gen)play(i)}catch(e){st('⚠ '+e.message)}}
+$('go').onclick=()=>{const u=$('url').value.trim();if(!u)return st('Paste a link first.');localStorage.setItem('nf-url',u);
+ a.src=SILENT;a.play().catch(()=>{});start(u)};   // unlocks audio for iPhone, then loads the real chapter
+$('skip').onclick=()=>{a.src=SILENT;a.play().catch(()=>{});advance()};
+a.onended=advance;a.onplaying=()=>{if(a.src.startsWith('http'))st('Playing')};
+a.onerror=()=>{if(cur&&!a.src.startsWith('data'))st('Audio failed – tap Play to retry')};
+if('mediaSession' in navigator){const m=navigator.mediaSession;m.setActionHandler('play',()=>a.play());m.setActionHandler('pause',()=>a.pause());m.setActionHandler('nexttrack',advance)}
+</script></body></html>
